@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -55,6 +56,7 @@ func BuildOpenVPNConnectArgs(configPath, cipher string) []string {
 	}
 
 	if strings.TrimSpace(cipher) != "" {
+		args = append(args, "--data-ciphers", buildDataCiphers(cipher))
 		args = append(args, "--data-ciphers-fallback", strings.TrimSpace(cipher))
 	}
 
@@ -226,6 +228,8 @@ func summarizeSpecificOpenVPNFailure(line string) (string, bool) {
 	switch {
 	case strings.Contains(upper, "AUTH_FAILED"):
 		return "OpenVPN 认证失败", true
+	case strings.Contains(upper, "FAILED TO NEGOTIATE CIPHER"):
+		return "OpenVPN 数据加密算法协商失败", true
 	case strings.Contains(upper, "HOST IS UNREACHABLE"):
 		return "目标节点不可达", true
 	case strings.Contains(upper, "TLS KEY NEGOTIATION FAILED"):
@@ -259,12 +263,26 @@ func ShouldAbortConnectOnLine(line string) bool {
 		return false
 	}
 
-	return strings.Contains(upper, "CONNECTION-FAILED") ||
+	return strings.Contains(upper, "FAILED TO NEGOTIATE CIPHER") ||
+		strings.Contains(upper, "CONNECTION-FAILED") ||
 		strings.Contains(upper, "HOST IS UNREACHABLE") ||
 		strings.Contains(upper, "NETWORK IS UNREACHABLE") ||
 		strings.Contains(upper, "AUTH_FAILED") ||
 		strings.Contains(upper, "TLS ERROR") ||
 		strings.Contains(upper, "TLS KEY NEGOTIATION FAILED")
+}
+
+func buildDataCiphers(cipher string) string {
+	base := []string{"AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"}
+	normalized := strings.TrimSpace(cipher)
+	if normalized == "" {
+		return strings.Join(base, ":")
+	}
+	if !slices.Contains(base, normalized) {
+		base = append(base, normalized)
+	}
+
+	return strings.Join(base, ":")
 }
 
 type openVPNScanResult struct {

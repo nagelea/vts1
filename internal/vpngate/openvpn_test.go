@@ -1,6 +1,9 @@
 package vpngate
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestSummarizeOpenVPNFailurePrefersSpecificCause(t *testing.T) {
 	lines := []string{
@@ -11,5 +14,17 @@ func TestSummarizeOpenVPNFailurePrefersSpecificCause(t *testing.T) {
 
 	if got := SummarizeOpenVPNFailure(lines); got != "目标节点不可达" {
 		t.Fatalf("SummarizeOpenVPNFailure() = %q, want %q", got, "目标节点不可达")
+	}
+}
+
+func TestBuildOpenVPNConnectArgsIncludesLegacyCipherInDataCiphers(t *testing.T) {
+	args := BuildOpenVPNConnectArgs("/tmp/test.ovpn", "AES-128-CBC")
+
+	index := slices.Index(args, "--data-ciphers")
+	if index < 0 || index+1 >= len(args) {
+		t.Fatal("BuildOpenVPNConnectArgs() missing --data-ciphers")
+	}
+	if got := args[index+1]; got != "AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305:AES-128-CBC" {
+		t.Fatalf("BuildOpenVPNConnectArgs() data ciphers = %q, want %q", got, "AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305:AES-128-CBC")
 	}
 }
