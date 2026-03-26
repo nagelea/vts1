@@ -194,32 +194,19 @@ func SummarizeOpenVPNFailure(lines []string) string {
 			continue
 		}
 
+		if detail, ok := summarizeSpecificOpenVPNFailure(line); ok {
+			return detail
+		}
+	}
+
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+
 		upper := strings.ToUpper(line)
 		switch {
-		case strings.Contains(upper, "AUTH_FAILED"):
-			return "OpenVPN 认证失败"
-		case strings.Contains(upper, "HOST IS UNREACHABLE"):
-			return "目标节点不可达"
-		case strings.Contains(upper, "TLS KEY NEGOTIATION FAILED"):
-			return "TLS 密钥协商失败"
-		case strings.Contains(upper, "TLS ERROR"):
-			return "TLS 握手失败"
-		case strings.Contains(upper, "CONNECTION TIMED OUT"):
-			return "连接目标节点超时"
-		case strings.Contains(upper, "INACTIVITY TIMEOUT"):
-			return "连接空闲超时"
-		case strings.Contains(upper, "NETWORK IS UNREACHABLE"):
-			return "网络不可达，无法连接目标节点"
-		case strings.Contains(upper, "CANNOT OPEN TUN/TAP DEV"):
-			return "无法打开 TUN/TAP 设备，请检查容器权限或宿主机网络能力"
-		case strings.Contains(upper, "PERMISSION DENIED"):
-			return "权限不足，无法启动 OpenVPN 或配置网络"
-		case strings.Contains(upper, "OPTIONS ERROR"):
-			return "OpenVPN 配置存在错误"
-		case strings.Contains(upper, "RESOLVE") && strings.Contains(upper, "FAILED"):
-			return "解析 VPN 节点地址失败"
-		case strings.Contains(upper, "CONNECTION-FAILED"):
-			return "连接目标节点失败"
 		case strings.Contains(upper, "FATAL"):
 			return line
 		case strings.Contains(upper, "ERROR"):
@@ -232,6 +219,38 @@ func SummarizeOpenVPNFailure(lines []string) string {
 	}
 
 	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+func summarizeSpecificOpenVPNFailure(line string) (string, bool) {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+	switch {
+	case strings.Contains(upper, "AUTH_FAILED"):
+		return "OpenVPN 认证失败", true
+	case strings.Contains(upper, "HOST IS UNREACHABLE"):
+		return "目标节点不可达", true
+	case strings.Contains(upper, "TLS KEY NEGOTIATION FAILED"):
+		return "TLS 密钥协商失败", true
+	case strings.Contains(upper, "TLS ERROR"):
+		return "TLS 握手失败", true
+	case strings.Contains(upper, "CONNECTION TIMED OUT"):
+		return "连接目标节点超时", true
+	case strings.Contains(upper, "INACTIVITY TIMEOUT"):
+		return "连接空闲超时", true
+	case strings.Contains(upper, "NETWORK IS UNREACHABLE"):
+		return "网络不可达，无法连接目标节点", true
+	case strings.Contains(upper, "CANNOT OPEN TUN/TAP DEV"):
+		return "无法打开 TUN/TAP 设备，请检查容器权限或宿主机网络能力", true
+	case strings.Contains(upper, "PERMISSION DENIED"):
+		return "权限不足，无法启动 OpenVPN 或配置网络", true
+	case strings.Contains(upper, "OPTIONS ERROR"):
+		return "OpenVPN 配置存在错误", true
+	case strings.Contains(upper, "RESOLVE") && strings.Contains(upper, "FAILED"):
+		return "解析 VPN 节点地址失败", true
+	case strings.Contains(upper, "CONNECTION-FAILED"):
+		return "连接目标节点失败", true
+	default:
+		return "", false
+	}
 }
 
 func ShouldAbortConnectOnLine(line string) bool {

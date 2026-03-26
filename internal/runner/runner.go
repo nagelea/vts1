@@ -49,6 +49,8 @@ type Runner struct {
 	lastMonitorConfirm      time.Time
 	monitorFailureCount     int
 	connectHandshakeSeen    bool
+	connectAbortTriggered   bool
+	connectAbortDetail      string
 	connectTimeoutTriggered bool
 	monitorIPs              []string
 	monitorCancel           context.CancelFunc
@@ -157,6 +159,8 @@ func (r *Runner) Connect(server vpngate.Server) error {
 	r.lastMonitorConfirm = time.Time{}
 	r.monitorFailureCount = 0
 	r.connectHandshakeSeen = false
+	r.connectAbortTriggered = false
+	r.connectAbortDetail = ""
 	r.connectTimeoutTriggered = false
 	r.logTail = r.logTail[:0]
 	r.mu.Unlock()
@@ -397,6 +401,7 @@ func (r *Runner) scanOpenVPNOutput(reader io.Reader) openVPNScanResult {
 
 		if !connected && !aborted && vpngate.ShouldAbortConnectOnLine(line) {
 			aborted = true
+			r.markConnectAbort(line)
 			r.abortConnectingProcess()
 		}
 	}
@@ -423,11 +428,15 @@ func (r *Runner) waitOpenVPN(cmd *exec.Cmd, writer *io.PipeWriter, scanDone <-ch
 	disconnectRequested := r.disconnectRequested
 	timeoutTriggered := r.connectTimeoutTriggered
 	handshakeSeen := r.connectHandshakeSeen
+	abortTriggered := r.connectAbortTriggered
+	abortDetail := r.connectAbortDetail
 	connectTimeout := r.autoConfig.OpenVPNConnectTimeout
 	r.proc = nil
 	r.configPath = ""
 	r.disconnectRequested = false
 	r.connectHandshakeSeen = false
+	r.connectAbortTriggered = false
+	r.connectAbortDetail = ""
 	r.connectTimeoutTriggered = false
 	r.monitorFailureCount = 0
 	r.updatedAt = time.Now()
@@ -453,10 +462,16 @@ func (r *Runner) waitOpenVPN(cmd *exec.Cmd, writer *io.PipeWriter, scanDone <-ch
 		}
 	}
 
-	if waitErr != nil || timedOutBeforeHandshake {
+	if abortTriggered && !handshakeSeen && strings.TrimSpace(abortDetail) != "" {
+		detail = abortDetail
+	}
+
+	if shouldMarkConnectFailure(waitErr, timedOutBeforeHandshake, handshakeSeen, abortTriggered) {
 		if strings.TrimSpace(detail) == "" {
 			if timedOutBeforeHandshake {
 				detail = fmt.Sprintf("连接握手超时，超过 %s", connectTimeout.Round(time.Second))
+			} else if abortTriggered && !handshakeSeen && strings.TrimSpace(abortDetail) != "" {
+				detail = abortDetail
 			} else {
 				detail = waitErr.Error()
 			}
@@ -522,6 +537,8 @@ func (r *Runner) fail(summary *ConnectionInfo, detail string) {
 	r.connectedAt = time.Time{}
 	r.monitorFailureCount = 0
 	r.connectHandshakeSeen = false
+	r.connectAbortTriggered = false
+	r.connectAbortDetail = ""
 	r.connectTimeoutTriggered = false
 	r.updatedAt = time.Now()
 }
@@ -536,6 +553,8 @@ func (r *Runner) resetAfterCancelledConnect() {
 	r.connectedAt = time.Time{}
 	r.monitorFailureCount = 0
 	r.connectHandshakeSeen = false
+	r.connectAbortTriggered = false
+	r.connectAbortDetail = ""
 	r.connectTimeoutTriggered = false
 	r.updatedAt = time.Now()
 	r.disconnectRequested = false
@@ -546,6 +565,8 @@ func (r *Runner) markConnectHandshakeSeen() {
 	defer r.mu.Unlock()
 
 	r.connectHandshakeSeen = true
+	r.connectAbortTriggered = false
+	r.connectAbortDetail = ""
 }
 
 func (r *Runner) markConnectTimeoutTriggered() {
@@ -556,11 +577,29 @@ func (r *Runner) markConnectTimeoutTriggered() {
 	r.updatedAt = time.Now()
 }
 
+func (r *Runner) markConnectAbort(line string) {
+	detail := vpngate.SummarizeOpenVPNFailure([]string{line})
+	if strings.TrimSpace(detail) == "" {
+		detail = strings.TrimSpace(line)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.connectAbortTriggered = true
+	r.connectAbortDetail = detail
+	r.updatedAt = time.Now()
+}
+
 func (r *Runner) shouldAbortConnectTimeout(cmd *exec.Cmd) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	return r.proc == cmd && r.state == StateConnecting && !r.disconnectRequested && !r.connectHandshakeSeen
+}
+
+func shouldMarkConnectFailure(waitErr error, timedOutBeforeHandshake, handshakeSeen, abortTriggered bool) bool {
+	return waitErr != nil || timedOutBeforeHandshake || (abortTriggered && !handshakeSeen)
 }
 
 func (r *Runner) abortConnectingProcess() {
