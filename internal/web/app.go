@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,8 @@ import (
 
 //go:embed templates/*.html
 var templateFS embed.FS
+
+const serversPerPage = 25
 
 type App struct {
 	client *http.Client
@@ -65,6 +68,16 @@ type PageData struct {
 	AveragePing         string
 	HighestSpeed        string
 	Rows                []ServerRow
+	CurrentPage         int
+	TotalPages          int
+	PageStart           int
+	PageEnd             int
+	HasPagination       bool
+	HasPreviousPage     bool
+	HasNextPage         bool
+	PreviousPageURL     string
+	NextPageURL         string
+	PageLinks           []PaginationLink
 	CurrentYear         int
 	SupportsRefresh     bool
 	SupportsVPNControl  bool
@@ -78,6 +91,12 @@ type PageData struct {
 	VPNCurrentIP        string
 	VPNConnectedSince   string
 	VPNCanDisconnect    bool
+}
+
+type PaginationLink struct {
+	Number    int
+	URL       string
+	IsCurrent bool
 }
 
 type CountryOption struct {
@@ -231,6 +250,7 @@ func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 		r.URL.Query().Get("error"),
 		r.URL.Query().Get("q"),
 		r.URL.Query().Get("country"),
+		parsePageNumber(r.URL.Query().Get("page")),
 	)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -250,6 +270,15 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		a.writeActionError(w, r, http.StatusForbidden, err.Error())
 		return
 	}
+
+	if err := parseSubmittedForm(r); err != nil {
+		a.writeActionError(w, r, http.StatusBadRequest, "读取表单失败")
+		return
+	}
+
+	query := strings.TrimSpace(r.FormValue("q"))
+	selectedCountry := strings.TrimSpace(r.FormValue("country"))
+	currentPage := parsePageNumber(r.FormValue("page"))
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -271,7 +300,7 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, buildIndexURL(notice, flashError, "", ""), http.StatusSeeOther)
+	http.Redirect(w, r, buildIndexURL(notice, flashError, query, selectedCountry, currentPage), http.StatusSeeOther)
 }
 
 func (a *App) handleServerTest(w http.ResponseWriter, r *http.Request) {
@@ -294,9 +323,10 @@ func (a *App) handleServerTest(w http.ResponseWriter, r *http.Request) {
 	ip := strings.TrimSpace(r.FormValue("ip"))
 	query := strings.TrimSpace(r.FormValue("q"))
 	selectedCountry := strings.TrimSpace(r.FormValue("country"))
+	currentPage := parsePageNumber(r.FormValue("page"))
 
 	redirectToIndex := func(notice, flashError string) {
-		http.Redirect(w, r, buildIndexURL(notice, flashError, query, selectedCountry), http.StatusSeeOther)
+		http.Redirect(w, r, buildIndexURL(notice, flashError, query, selectedCountry, currentPage), http.StatusSeeOther)
 	}
 
 	respondTestAction := func(statusCode int, ok bool, notice, flashError string, server *vpngate.Server, state *serverTestState) {
@@ -407,6 +437,7 @@ func (a *App) handleVPNConnect(w http.ResponseWriter, r *http.Request) {
 	selectedCountry := strings.TrimSpace(r.FormValue("country"))
 	hostName := strings.TrimSpace(r.FormValue("hostname"))
 	ip := strings.TrimSpace(r.FormValue("ip"))
+	currentPage := parsePageNumber(r.FormValue("page"))
 
 	respond := func(statusCode int, ok bool, notice, flashError string) {
 		if wantsJSONResponse(r) {
@@ -414,7 +445,7 @@ func (a *App) handleVPNConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		http.Redirect(w, r, buildIndexURL(notice, flashError, query, selectedCountry), http.StatusSeeOther)
+		http.Redirect(w, r, buildIndexURL(notice, flashError, query, selectedCountry, currentPage), http.StatusSeeOther)
 	}
 
 	if a.runner == nil || !a.runner.Enabled() {
@@ -484,6 +515,7 @@ func (a *App) handleVPNConnectRecommended(w http.ResponseWriter, r *http.Request
 
 	query := strings.TrimSpace(r.FormValue("q"))
 	selectedCountry := strings.TrimSpace(r.FormValue("country"))
+	currentPage := parsePageNumber(r.FormValue("page"))
 
 	respond := func(statusCode int, ok bool, notice, flashError string) {
 		if wantsJSONResponse(r) {
@@ -491,7 +523,7 @@ func (a *App) handleVPNConnectRecommended(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		http.Redirect(w, r, buildIndexURL(notice, flashError, query, selectedCountry), http.StatusSeeOther)
+		http.Redirect(w, r, buildIndexURL(notice, flashError, query, selectedCountry, currentPage), http.StatusSeeOther)
 	}
 
 	if a.runner == nil || !a.runner.Enabled() {
@@ -549,13 +581,22 @@ func (a *App) handleVPNDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := parseSubmittedForm(r); err != nil {
+		a.writeActionError(w, r, http.StatusBadRequest, "读取表单失败")
+		return
+	}
+
+	query := strings.TrimSpace(r.FormValue("q"))
+	selectedCountry := strings.TrimSpace(r.FormValue("country"))
+	currentPage := parsePageNumber(r.FormValue("page"))
+
 	respond := func(statusCode int, ok bool, notice, flashError string) {
 		if wantsJSONResponse(r) {
 			a.writeJSON(w, statusCode, actionResponse{OK: ok, Notice: notice, Error: flashError, Reload: ok})
 			return
 		}
 
-		http.Redirect(w, r, buildIndexURL(notice, flashError, "", ""), http.StatusSeeOther)
+		http.Redirect(w, r, buildIndexURL(notice, flashError, query, selectedCountry, currentPage), http.StatusSeeOther)
 	}
 
 	if a.runner == nil || !a.runner.Enabled() {
@@ -609,7 +650,7 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"状态":"正常"}`))
 }
 
-func (a *App) buildPageData(notice, flashError, query, selectedCountry string) PageData {
+func (a *App) buildPageData(notice, flashError, query, selectedCountry string, requestedPage int) PageData {
 	runnerStatus, runnerErr := a.fetchRunnerStatus()
 	vpnStatusText, vpnStatusClass, vpnStatusDetail, vpnCurrentNode, vpnCurrentIP, vpnConnectedSince, vpnCanDisconnect := formatVPNStatus(runnerStatus, runnerErr)
 
@@ -707,6 +748,22 @@ func (a *App) buildPageData(notice, flashError, query, selectedCountry string) P
 		lastUpdatedReadable = relativeTimeCN(lastUpdated)
 	}
 
+	totalCount := len(rows)
+	currentPage, totalPages, pageStart, pageEnd, pagedRows := paginateServerRows(rows, requestedPage, serversPerPage)
+	pageLinks := buildPaginationLinks(query, selectedCountry, currentPage, totalPages)
+	hasPreviousPage := currentPage > 1
+	hasNextPage := totalPages > 0 && currentPage < totalPages
+
+	previousPageURL := ""
+	if hasPreviousPage {
+		previousPageURL = buildIndexURL("", "", query, selectedCountry, currentPage-1)
+	}
+
+	nextPageURL := ""
+	if hasNextPage {
+		nextPageURL = buildIndexURL("", "", query, selectedCountry, currentPage+1)
+	}
+
 	return PageData{
 		Title:               "VPNGate 节点管理页面",
 		Description:         "用于浏览当前可用的 VPNGate 在线节点，并支持按关键词与国家快速筛选。你现在还可以针对单个节点发起 OpenVPN 测试；测试会在当前服务所在主机上执行，成功握手后自动断开，不再提供一键全测。请确保宿主机已安装 openvpn，并具备创建网络接口所需权限。",
@@ -720,16 +777,26 @@ func (a *App) buildPageData(notice, flashError, query, selectedCountry string) P
 		Countries:           countryOptions,
 		UpdatedAt:           updatedAt,
 		RefreshDuration:     formatDurationCN(lastRefreshDuration),
-		TotalCount:          len(rows),
+		TotalCount:          totalCount,
 		SourceCount:         len(servers),
 		CountryCount:        len(countries),
 		AveragePing:         averagePing,
 		HighestSpeed:        formatBitRate(highestSpeed),
-		Rows:                rows,
+		Rows:                pagedRows,
+		CurrentPage:         currentPage,
+		TotalPages:          totalPages,
+		PageStart:           pageStart,
+		PageEnd:             pageEnd,
+		HasPagination:       totalPages > 1,
+		HasPreviousPage:     hasPreviousPage,
+		HasNextPage:         hasNextPage,
+		PreviousPageURL:     previousPageURL,
+		NextPageURL:         nextPageURL,
+		PageLinks:           pageLinks,
 		CurrentYear:         time.Now().Year(),
 		SupportsRefresh:     true,
 		SupportsVPNControl:  a.runner != nil && a.runner.Enabled(),
-		HasData:             len(rows) > 0,
+		HasData:             totalCount > 0,
 		LastUpdatedReadable: lastUpdatedReadable,
 		VPNStatusText:       vpnStatusText,
 		VPNStatusClass:      vpnStatusClass,
@@ -819,7 +886,7 @@ func (a *App) fetchRunnerStatus() (runner.Status, error) {
 	return a.runner.Status(ctx)
 }
 
-func buildIndexURL(notice, flashError, query, selectedCountry string) string {
+func buildIndexURL(notice, flashError, query, selectedCountry string, page int) string {
 	values := url.Values{}
 	if strings.TrimSpace(notice) != "" {
 		values.Set("notice", notice)
@@ -833,12 +900,74 @@ func buildIndexURL(notice, flashError, query, selectedCountry string) string {
 	if strings.TrimSpace(selectedCountry) != "" {
 		values.Set("country", selectedCountry)
 	}
+	if page > 1 {
+		values.Set("page", strconv.Itoa(page))
+	}
 
 	if encoded := values.Encode(); encoded != "" {
 		return "/?" + encoded
 	}
 
 	return "/"
+}
+
+func parsePageNumber(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 1
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 {
+		return 1
+	}
+
+	return value
+}
+
+func paginateServerRows(rows []ServerRow, requestedPage, pageSize int) (currentPage, totalPages, pageStart, pageEnd int, pagedRows []ServerRow) {
+	if pageSize <= 0 {
+		pageSize = serversPerPage
+	}
+
+	totalCount := len(rows)
+	if totalCount == 0 {
+		return 1, 1, 0, 0, nil
+	}
+
+	totalPages = (totalCount + pageSize - 1) / pageSize
+	currentPage = requestedPage
+	if currentPage < 1 {
+		currentPage = 1
+	}
+	if currentPage > totalPages {
+		currentPage = totalPages
+	}
+
+	startIndex := (currentPage - 1) * pageSize
+	endIndex := min(startIndex+pageSize, totalCount)
+
+	pageStart = startIndex + 1
+	pageEnd = endIndex
+	pagedRows = append([]ServerRow(nil), rows[startIndex:endIndex]...)
+	return currentPage, totalPages, pageStart, pageEnd, pagedRows
+}
+
+func buildPaginationLinks(query, selectedCountry string, currentPage, totalPages int) []PaginationLink {
+	if totalPages <= 1 {
+		return nil
+	}
+
+	links := make([]PaginationLink, 0, totalPages)
+	for page := 1; page <= totalPages; page++ {
+		links = append(links, PaginationLink{
+			Number:    page,
+			URL:       buildIndexURL("", "", query, selectedCountry, page),
+			IsCurrent: page == currentPage,
+		})
+	}
+
+	return links
 }
 
 func validateSameOriginRequest(r *http.Request) error {

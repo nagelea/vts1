@@ -42,6 +42,99 @@ func TestSelectRecommendedServer(t *testing.T) {
 	}
 }
 
+func TestBuildPageDataPaginatesFilteredRows(t *testing.T) {
+	app, err := NewApp(log.New(io.Discard, "", 0), nil, nil)
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+
+	servers := make([]vpngate.Server, 0, 60)
+	for i := 1; i <= 60; i++ {
+		servers = append(servers, vpngate.Server{
+			HostName:                "jp-node-" + strconv.Itoa(i),
+			IP:                      "10.0.0." + strconv.Itoa(i),
+			CountryLong:             "Japan",
+			CountryShort:            "JP",
+			TotalUsers:              int64(i),
+			Uptime:                  int64(i),
+			NumVPNSessions:          1,
+			OpenVPNConfigDataBase64: "cfg",
+		})
+	}
+
+	app.mu.Lock()
+	app.servers = servers
+	app.mu.Unlock()
+
+	page := app.buildPageData("", "", "", "", 2)
+
+	if page.TotalCount != 60 {
+		t.Fatalf("buildPageData().TotalCount = %d, want %d", page.TotalCount, 60)
+	}
+	if page.CurrentPage != 2 {
+		t.Fatalf("buildPageData().CurrentPage = %d, want %d", page.CurrentPage, 2)
+	}
+	if page.TotalPages != 3 {
+		t.Fatalf("buildPageData().TotalPages = %d, want %d", page.TotalPages, 3)
+	}
+	if page.PageStart != 26 || page.PageEnd != 50 {
+		t.Fatalf("buildPageData() page range = %d-%d, want %d-%d", page.PageStart, page.PageEnd, 26, 50)
+	}
+	if len(page.Rows) != 25 {
+		t.Fatalf("buildPageData() row count = %d, want %d", len(page.Rows), 25)
+	}
+	if page.Rows[0].Rank != 26 {
+		t.Fatalf("buildPageData() first rank = %d, want %d", page.Rows[0].Rank, 26)
+	}
+}
+
+func TestBuildPageDataClampsRequestedPage(t *testing.T) {
+	app, err := NewApp(log.New(io.Discard, "", 0), nil, nil)
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+
+	app.mu.Lock()
+	app.servers = []vpngate.Server{
+		{HostName: "node-1", IP: "1.1.1.1", CountryLong: "Japan", CountryShort: "JP", TotalUsers: 1, Uptime: 1, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg"},
+		{HostName: "node-2", IP: "1.1.1.2", CountryLong: "Japan", CountryShort: "JP", TotalUsers: 2, Uptime: 2, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg"},
+	}
+	app.mu.Unlock()
+
+	page := app.buildPageData("", "", "", "", 99)
+
+	if page.CurrentPage != 1 {
+		t.Fatalf("buildPageData().CurrentPage = %d, want %d", page.CurrentPage, 1)
+	}
+	if page.TotalPages != 1 {
+		t.Fatalf("buildPageData().TotalPages = %d, want %d", page.TotalPages, 1)
+	}
+}
+
+func TestBuildIndexURLIncludesPageOnlyAfterFirstPage(t *testing.T) {
+	parsed, err := url.Parse(buildIndexURL("", "", "jp", "JP", 3))
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	if got := parsed.Query().Get("q"); got != "jp" {
+		t.Fatalf("query param q = %q, want %q", got, "jp")
+	}
+	if got := parsed.Query().Get("country"); got != "JP" {
+		t.Fatalf("query param country = %q, want %q", got, "JP")
+	}
+	if got := parsed.Query().Get("page"); got != "3" {
+		t.Fatalf("query param page = %q, want %q", got, "3")
+	}
+
+	parsed, err = url.Parse(buildIndexURL("", "", "jp", "JP", 1))
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	if got := parsed.Query().Get("page"); got != "" {
+		t.Fatalf("query param page = %q, want empty string", got)
+	}
+}
+
 func TestHandleVPNConnectUsesLatestServerList(t *testing.T) {
 	var connectCalls atomic.Int32
 	runnerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

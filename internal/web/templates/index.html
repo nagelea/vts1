@@ -440,6 +440,50 @@
       padding: 0 22px 16px;
     }
 
+    .pagination {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      padding: 18px 22px 22px;
+      border-top: 1px solid #edf2f7;
+    }
+
+    .pagination-summary {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .pagination-links {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .pagination-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 40px;
+      min-height: 36px;
+      padding: 0 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--surface-soft);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .pagination-link-current {
+      background: var(--primary-soft);
+      color: var(--primary);
+      border-color: rgba(29, 78, 216, 0.2);
+    }
+
     .toast-region {
       position: fixed;
       top: 18px;
@@ -606,6 +650,10 @@
       .vpn-actions {
         justify-content: stretch;
       }
+
+      .pagination {
+        align-items: stretch;
+      }
     }
   </style>
 </head>
@@ -625,6 +673,9 @@
       <div class="hero-actions">
         {{if .SupportsRefresh}}
         <form class="js-refresh-form" method="post" action="/refresh">
+          <input type="hidden" name="q" value="{{.Query}}">
+          <input type="hidden" name="country" value="{{.SelectedCountry}}">
+          <input type="hidden" name="page" value="{{.CurrentPage}}">
           <button class="btn btn-primary" type="submit" data-default-label="立即刷新">立即刷新</button>
         </form>
         {{end}}
@@ -667,12 +718,16 @@
           <form class="js-vpn-form" method="post" action="/vpn/connect/recommended">
             <input type="hidden" name="q" value="{{.Query}}">
             <input type="hidden" name="country" value="{{.SelectedCountry}}">
+            <input type="hidden" name="page" value="{{.CurrentPage}}">
             <button class="btn btn-primary" type="submit" data-default-label="连接推荐节点" data-pending-label="连接中…">连接推荐节点</button>
           </form>
           {{end}}
           {{end}}
           {{if .VPNCanDisconnect}}
           <form class="js-vpn-form" method="post" action="/vpn/disconnect">
+            <input type="hidden" name="q" value="{{.Query}}">
+            <input type="hidden" name="country" value="{{.SelectedCountry}}">
+            <input type="hidden" name="page" value="{{.CurrentPage}}">
             <button class="btn btn-secondary" type="submit" data-default-label="断开连接" data-pending-label="断开中…">断开连接</button>
           </form>
           {{end}}
@@ -746,6 +801,7 @@
           </div>
           <div class="toolbar-actions">
             <span class="pill">当前结果：{{.TotalCount}} / {{.SourceCount}} 条</span>
+            <span class="pill">页码：第 {{.CurrentPage}} / {{.TotalPages}} 页</span>
             <span class="pill">协议类型：OpenVPN</span>
           </div>
         </div>
@@ -794,6 +850,7 @@
                         <input type="hidden" name="ip" value="{{.IP}}">
                         <input type="hidden" name="q" value="{{$.Query}}">
                         <input type="hidden" name="country" value="{{$.SelectedCountry}}">
+                        <input type="hidden" name="page" value="{{$.CurrentPage}}">
                         <button class="btn btn-primary-soft btn-compact" type="submit" data-default-label="连接此节点" data-pending-label="连接中…">连接此节点</button>
                       </form>
                       {{end}}
@@ -802,6 +859,7 @@
                         <input type="hidden" name="ip" value="{{.IP}}">
                         <input type="hidden" name="q" value="{{$.Query}}">
                         <input type="hidden" name="country" value="{{$.SelectedCountry}}">
+                        <input type="hidden" name="page" value="{{$.CurrentPage}}">
                         <button class="btn btn-secondary btn-compact" type="submit" data-default-label="测试节点">测试节点</button>
                       </form>
                     </div>
@@ -830,6 +888,24 @@
             </tbody>
           </table>
         </div>
+        {{if .HasPagination}}
+        <div class="pagination">
+          <div class="pagination-summary">
+            当前显示第 {{.PageStart}} - {{.PageEnd}} 条，共 {{.TotalCount}} 条结果
+          </div>
+          <div class="pagination-links">
+            {{if .HasPreviousPage}}
+            <a class="pagination-link" href="{{.PreviousPageURL}}">上一页</a>
+            {{end}}
+            {{range .PageLinks}}
+            <a class="pagination-link {{if .IsCurrent}}pagination-link-current{{end}}" href="{{.URL}}">{{.Number}}</a>
+            {{end}}
+            {{if .HasNextPage}}
+            <a class="pagination-link" href="{{.NextPageURL}}">下一页</a>
+            {{end}}
+          </div>
+        </div>
+        {{end}}
         {{else}}
         <div class="empty">
           <h3>暂无可展示的节点</h3>
