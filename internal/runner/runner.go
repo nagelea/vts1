@@ -26,6 +26,7 @@ const openVPNConnectTimeoutGrace = 2 * time.Second
 type Runner struct {
 	logger *log.Logger
 	socks  *SOCKSServer
+	http   *HTTPProxyServer
 
 	mu                      sync.RWMutex
 	autoConfig              AutoPilotConfig
@@ -62,7 +63,7 @@ type openVPNScanResult struct {
 	err   error
 }
 
-func New(logger *log.Logger, socksListenAddr string, bypassCIDRs []string, autoConfig AutoPilotConfig) (*Runner, error) {
+func New(logger *log.Logger, socksListenAddr, httpProxyListenAddr string, bypassCIDRs []string, autoConfig AutoPilotConfig) (*Runner, error) {
 	if logger == nil {
 		logger = log.Default()
 	}
@@ -85,7 +86,14 @@ func New(logger *log.Logger, socksListenAddr string, bypassCIDRs []string, autoC
 		return nil, err
 	}
 
+	httpProxy, err := newHTTPProxyServer(logger, httpProxyListenAddr, r.canProxy)
+	if err != nil {
+		_ = socks.Close()
+		return nil, err
+	}
+
 	r.socks = socks
+	r.http = httpProxy
 	return r, nil
 }
 
@@ -100,6 +108,9 @@ func (r *Runner) Start(ctx context.Context) {
 func (r *Runner) Close() error {
 	if r.socks != nil {
 		_ = r.socks.Close()
+	}
+	if r.http != nil {
+		_ = r.http.Close()
 	}
 
 	return r.Disconnect()
@@ -116,15 +127,24 @@ func (r *Runner) Status() Status {
 	}
 
 	logs := append([]string(nil), r.logTail...)
+	socksListenAddr := ""
+	if r.socks != nil {
+		socksListenAddr = r.socks.ListenAddr()
+	}
+	httpProxyListenAddr := ""
+	if r.http != nil {
+		httpProxyListenAddr = r.http.ListenAddr()
+	}
 
 	return Status{
-		State:           r.state,
-		Current:         current,
-		SocksListenAddr: r.socks.ListenAddr(),
-		LastError:       r.lastError,
-		ConnectedAt:     r.connectedAt,
-		UpdatedAt:       r.updatedAt,
-		LogTail:         logs,
+		State:               r.state,
+		Current:             current,
+		SocksListenAddr:     socksListenAddr,
+		HTTPProxyListenAddr: httpProxyListenAddr,
+		LastError:           r.lastError,
+		ConnectedAt:         r.connectedAt,
+		UpdatedAt:           r.updatedAt,
+		LogTail:             logs,
 	}
 }
 

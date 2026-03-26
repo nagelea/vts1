@@ -688,7 +688,7 @@
         <div>
           <div class="toolbar" style="margin-bottom: 0;">
             <div>
-              <h2>VPN 与 SOCKS5 状态</h2>
+              <h2>VPN、SOCKS5 与 HTTP 代理状态</h2>
               <p>持久连接由独立的 VPN Runner 维护，Web 页面只负责控制和状态展示。</p>
             </div>
             <span class="status-pill {{.VPNStatusClass}}">{{.VPNStatusText}}</span>
@@ -698,13 +698,14 @@
             <span class="pill">当前节点：{{.VPNCurrentNode}}{{if .VPNCurrentIP}}（{{.VPNCurrentIP}}）{{end}}</span>
             {{end}}
             <span class="pill">SOCKS5：{{.VPNSocksAddress}}</span>
+            <span class="pill">HTTP：{{.VPNHTTPProxyAddress}}</span>
             {{if .VPNConnectedSince}}
             <span class="pill">连接时长：{{.VPNConnectedSince}}</span>
             {{end}}
           </div>
           <div class="subtext" style="margin-top: 10px; font-size: 13px;">{{.VPNStatusDetail}}</div>
           {{if .SupportsVPNControl}}
-          <div class="subtext" style="margin-top: 8px; font-size: 13px;">客户端示例：<code>socks5://&lt;宿主机IP&gt;:1080</code> ｜ 如客户端支持远端 DNS，可再尝试 <code>socks5h://</code></div>
+          <div class="subtext" style="margin-top: 8px; font-size: 13px;">客户端示例：<code>socks5://&lt;宿主机IP&gt;:10080</code> / <code>socks5h://&lt;宿主机IP&gt;:10080</code> ｜ HTTP 代理：<code>http://&lt;宿主机IP&gt;:10081</code></div>
           {{end}}
           {{if .SupportsVPNControl}}
           {{if not .VPNCanDisconnect}}

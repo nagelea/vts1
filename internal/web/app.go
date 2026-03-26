@@ -87,6 +87,7 @@ type PageData struct {
 	VPNStatusClass      string
 	VPNStatusDetail     string
 	VPNSocksAddress     string
+	VPNHTTPProxyAddress string
 	VPNCurrentNode      string
 	VPNCurrentIP        string
 	VPNConnectedSince   string
@@ -488,10 +489,10 @@ func (a *App) handleVPNConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	statusCode := http.StatusAccepted
-	notice := fmt.Sprintf("已开始连接节点 %s，SOCKS5 代理地址 %s", server.HostName, status.SocksListenAddr)
+	notice := fmt.Sprintf("已开始连接节点 %s，%s", server.HostName, formatProxyAddressesCN(status))
 	if status.State == runner.StateConnected {
 		statusCode = http.StatusOK
-		notice = fmt.Sprintf("节点 %s 已连接成功，SOCKS5 代理地址 %s", server.HostName, status.SocksListenAddr)
+		notice = fmt.Sprintf("节点 %s 已连接成功，%s", server.HostName, formatProxyAddressesCN(status))
 	}
 
 	respond(statusCode, true, notice, "")
@@ -561,10 +562,10 @@ func (a *App) handleVPNConnectRecommended(w http.ResponseWriter, r *http.Request
 	}
 
 	statusCode := http.StatusAccepted
-	notice := fmt.Sprintf("已开始连接推荐节点 %s，SOCKS5 代理地址 %s", server.HostName, status.SocksListenAddr)
+	notice := fmt.Sprintf("已开始连接推荐节点 %s，%s", server.HostName, formatProxyAddressesCN(status))
 	if status.State == runner.StateConnected {
 		statusCode = http.StatusOK
-		notice = fmt.Sprintf("推荐节点 %s 已连接成功，SOCKS5 代理地址 %s", server.HostName, status.SocksListenAddr)
+		notice = fmt.Sprintf("推荐节点 %s 已连接成功，%s", server.HostName, formatProxyAddressesCN(status))
 	}
 
 	respond(statusCode, true, notice, "")
@@ -802,6 +803,7 @@ func (a *App) buildPageData(notice, flashError, query, selectedCountry string, r
 		VPNStatusClass:      vpnStatusClass,
 		VPNStatusDetail:     vpnStatusDetail,
 		VPNSocksAddress:     runnerStatus.SocksListenAddr,
+		VPNHTTPProxyAddress: runnerStatus.HTTPProxyListenAddr,
 		VPNCurrentNode:      vpnCurrentNode,
 		VPNCurrentIP:        vpnCurrentIP,
 		VPNConnectedSince:   vpnConnectedSince,
@@ -1055,6 +1057,10 @@ func formatVPNStatus(status runner.Status, runnerErr error) (string, string, str
 	if socksAddress == "" {
 		socksAddress = "未配置"
 	}
+	httpProxyAddress := strings.TrimSpace(status.HTTPProxyListenAddr)
+	if httpProxyAddress == "" {
+		httpProxyAddress = "未配置"
+	}
 
 	vpnNode := ""
 	vpnIP := ""
@@ -1070,7 +1076,7 @@ func formatVPNStatus(status runner.Status, runnerErr error) (string, string, str
 
 	switch status.State {
 	case runner.StateConnected:
-		detail := fmt.Sprintf("当前 SOCKS5 代理地址：%s", socksAddress)
+		detail := fmt.Sprintf("当前 SOCKS5 代理地址：%s ｜ HTTP 代理地址：%s", socksAddress, httpProxyAddress)
 		if connectedSince != "" {
 			detail += " ｜ 已连接：" + connectedSince
 		}
@@ -1087,7 +1093,7 @@ func formatVPNStatus(status runner.Status, runnerErr error) (string, string, str
 		detail := safeText(status.LastError, "最近一次连接失败，请查看 Runner 日志")
 		return "VPN 连接失败", "status-warn", detail, vpnNode, vpnIP, connectedSince, false
 	default:
-		detail := fmt.Sprintf("SOCKS5 监听地址：%s ｜ 当前尚未建立 VPN 连接", socksAddress)
+		detail := fmt.Sprintf("SOCKS5 监听地址：%s ｜ HTTP 代理地址：%s ｜ 当前尚未建立 VPN 连接", socksAddress, httpProxyAddress)
 		return "VPN 未连接", "status-warn", detail, vpnNode, vpnIP, connectedSince, false
 	}
 }
@@ -1103,6 +1109,19 @@ func buildServerTestPayload(server vpngate.Server, state serverTestState) *serve
 		ClassName: formatted.ClassName,
 		Detail:    formatted.Detail,
 	}
+}
+
+func formatProxyAddressesCN(status runner.Status) string {
+	socksAddress := strings.TrimSpace(status.SocksListenAddr)
+	if socksAddress == "" {
+		socksAddress = "未配置"
+	}
+	httpProxyAddress := strings.TrimSpace(status.HTTPProxyListenAddr)
+	if httpProxyAddress == "" {
+		httpProxyAddress = "未配置"
+	}
+
+	return fmt.Sprintf("SOCKS5 代理地址 %s ｜ HTTP 代理地址 %s", socksAddress, httpProxyAddress)
 }
 
 func matchesFilters(server vpngate.Server, query, selectedCountry string) bool {

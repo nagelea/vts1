@@ -1,13 +1,13 @@
 # VpnGate
 
-一个本地 VPN Gate 管理工具：提供 **节点浏览 Web 页面**、**单节点 OpenVPN 测试**、**推荐节点连接**、**自动连接/监测 Runner** 和 **SOCKS5 代理出口**。
+一个本地 VPN Gate 管理工具：提供 **节点浏览 Web 页面**、**单节点 OpenVPN 测试**、**推荐节点连接**、**自动连接/监测 Runner**、**SOCKS5 代理出口** 和 **HTTP 代理出口**。
 
 适合用来：
 
 - 浏览并筛选 VPN Gate 在线节点
 - 在本机或容器内测试节点是否可连
 - 连接推荐节点或指定节点
-- 通过本地 SOCKS5 代理使用已连接的 VPN
+- 通过本地 SOCKS5 或 HTTP 代理使用已连接的 VPN
 - 让 Runner 自动检测网络状态并在需要时重新选点
 
 ## 功能概览
@@ -18,7 +18,7 @@
 - 展示节点主机名、IP、国家、Ping、速度、在线时长、会话数、用户数、流量、备注等信息
 - 支持单节点 OpenVPN 测试
 - 支持连接推荐节点 / 指定节点 / 断开连接
-- 提供本地 SOCKS5 代理入口
+- 提供本地 SOCKS5 与 HTTP 代理入口
 - 支持 Runner 自动连接、监控探活、失败隔离与重试
 
 ## 组件说明
@@ -40,7 +40,7 @@
 负责：
 
 - 管理 OpenVPN 连接生命周期
-- 提供 SOCKS5 代理
+- 提供 SOCKS5 与 HTTP 代理
 - 对外暴露本地控制接口
 - 自动选点、自动连接、监控连通性、失败隔离
 
@@ -48,6 +48,7 @@
 
 - 控制接口：`127.0.0.1:18081`
 - SOCKS5：`127.0.0.1:1080`（Compose 对外映射为 `10080`）
+- HTTP 代理：`127.0.0.1:8081`（Compose 对外映射为 `10081`）
 
 ### 为什么拆成两个进程
 
@@ -97,6 +98,7 @@ Web 和 Runner 分离后，可以避免 OpenVPN 修改路由时影响 Web 管理
 
 - Web 页面：`http://localhost:8082`
 - SOCKS5 代理：`127.0.0.1:10080`
+- HTTP 代理：`http://127.0.0.1:10081`
 
 #### Linux
 
@@ -218,6 +220,7 @@ gofmt -l .
 | --- | --- | --- |
 | `RUNNER_CONTROL_ADDR` | `:18081` | Runner 控制接口监听地址 |
 | `SOCKS_LISTEN_ADDR` | `0.0.0.0:1080` | SOCKS5 代理监听地址 |
+| `HTTP_PROXY_LISTEN_ADDR` | `0.0.0.0:8081` | HTTP 代理监听地址 |
 | `SOCKS_BYPASS_CIDRS` | 空 | SOCKS5 直连网段，逗号分隔 |
 | `AUTO_CONNECT` | `true` | 是否启用自动连接与自动守护 |
 | `MONITOR_URL` | `https://www.gstatic.com/generate_204` | HTTP 探活地址 |
@@ -262,4 +265,4 @@ AUTO_CONNECT=false MONITOR_INTERVAL=15s docker compose -f docker-compose.macos.y
 - 单节点测试和持久连接依赖 `openvpn`
 - Docker 场景下，Runner 需要 `privileged` / `NET_ADMIN` 等网络能力
 - macOS Docker Desktop 场景依赖 Linux VM 的网络能力，不等同于直接控制 macOS 宿主机网络
-- 如果你只需要查看节点列表，可以只运行 Web；如果需要连接、SOCKS5、自动守护能力，则需要同时运行 Runner
+- 如果你只需要查看节点列表，可以只运行 Web；如果需要连接、SOCKS5、HTTP 代理、自动守护能力，则需要同时运行 Runner

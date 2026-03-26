@@ -40,6 +40,7 @@ services:
     environment:
       RUNNER_CONTROL_ADDR: ":18081"
       SOCKS_LISTEN_ADDR: "0.0.0.0:1080"
+      HTTP_PROXY_LISTEN_ADDR: "0.0.0.0:8081"
       SOCKS_BYPASS_CIDRS: "${SOCKS_BYPASS_CIDRS:-192.168.31.0/24}"
       AUTO_CONNECT: "${AUTO_CONNECT:-true}"
       MONITOR_URL: "${MONITOR_URL:-https://www.gstatic.com/generate_204}"
@@ -64,3 +65,4 @@ services:
     command: ["/usr/local/bin/vpngate-runner"]
     ports:
       - "10080:1080"
+      - "10081:8081"

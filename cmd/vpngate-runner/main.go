@@ -19,7 +19,7 @@ func main() {
 	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
 	defer runtimeCancel()
 
-	r, err := runner.New(logger, socksListenAddr(), socksBypassCIDRs(), autoPilotConfig())
+	r, err := runner.New(logger, socksListenAddr(), httpProxyListenAddr(), socksBypassCIDRs(), autoPilotConfig())
 	if err != nil {
 		logger.Fatalf("初始化 VPN Runner 失败：%v", err)
 	}
@@ -34,6 +34,7 @@ func main() {
 	go func() {
 		logger.Printf("Runner 控制接口启动成功，监听地址：%s", controlAddr())
 		logger.Printf("SOCKS5 监听地址：%s", r.Status().SocksListenAddr)
+		logger.Printf("HTTP 代理监听地址：%s", r.Status().HTTPProxyListenAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatalf("启动 Runner HTTP 服务失败：%v", err)
 		}
@@ -70,6 +71,14 @@ func socksListenAddr() string {
 	}
 
 	return "0.0.0.0:1080"
+}
+
+func httpProxyListenAddr() string {
+	if value := os.Getenv("HTTP_PROXY_LISTEN_ADDR"); value != "" {
+		return value
+	}
+
+	return "0.0.0.0:8081"
 }
 
 func socksBypassCIDRs() []string {
