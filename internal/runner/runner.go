@@ -366,6 +366,7 @@ func (r *Runner) scanOpenVPNOutput(reader io.Reader) openVPNScanResult {
 	scanner := bufio.NewScanner(reader)
 	lines := make([]string, 0, runnerLogTailLimit)
 	connected := false
+	aborted := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -392,6 +393,11 @@ func (r *Runner) scanOpenVPNOutput(reader io.Reader) openVPNScanResult {
 			connected = true
 			r.markConnected()
 			r.startMonitorLoop()
+		}
+
+		if !connected && !aborted && vpngate.ShouldAbortConnectOnLine(line) {
+			aborted = true
+			r.abortConnectingProcess()
 		}
 	}
 
@@ -555,6 +561,19 @@ func (r *Runner) shouldAbortConnectTimeout(cmd *exec.Cmd) bool {
 	defer r.mu.RUnlock()
 
 	return r.proc == cmd && r.state == StateConnecting && !r.disconnectRequested && !r.connectHandshakeSeen
+}
+
+func (r *Runner) abortConnectingProcess() {
+	r.mu.RLock()
+	proc := r.proc
+	shouldAbort := r.state == StateConnecting && !r.disconnectRequested && !r.connectHandshakeSeen
+	r.mu.RUnlock()
+
+	if !shouldAbort || proc == nil || proc.Process == nil {
+		return
+	}
+
+	_ = proc.Process.Signal(syscall.SIGTERM)
 }
 
 func (r *Runner) watchConnectTimeout(cmd *exec.Cmd, summary *ConnectionInfo) {

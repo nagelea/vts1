@@ -198,6 +198,8 @@ func SummarizeOpenVPNFailure(lines []string) string {
 		switch {
 		case strings.Contains(upper, "AUTH_FAILED"):
 			return "OpenVPN 认证失败"
+		case strings.Contains(upper, "HOST IS UNREACHABLE"):
+			return "目标节点不可达"
 		case strings.Contains(upper, "TLS KEY NEGOTIATION FAILED"):
 			return "TLS 密钥协商失败"
 		case strings.Contains(upper, "TLS ERROR"):
@@ -216,6 +218,8 @@ func SummarizeOpenVPNFailure(lines []string) string {
 			return "OpenVPN 配置存在错误"
 		case strings.Contains(upper, "RESOLVE") && strings.Contains(upper, "FAILED"):
 			return "解析 VPN 节点地址失败"
+		case strings.Contains(upper, "CONNECTION-FAILED"):
+			return "连接目标节点失败"
 		case strings.Contains(upper, "FATAL"):
 			return line
 		case strings.Contains(upper, "ERROR"):
@@ -228,6 +232,20 @@ func SummarizeOpenVPNFailure(lines []string) string {
 	}
 
 	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+func ShouldAbortConnectOnLine(line string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+	if upper == "" {
+		return false
+	}
+
+	return strings.Contains(upper, "CONNECTION-FAILED") ||
+		strings.Contains(upper, "HOST IS UNREACHABLE") ||
+		strings.Contains(upper, "NETWORK IS UNREACHABLE") ||
+		strings.Contains(upper, "AUTH_FAILED") ||
+		strings.Contains(upper, "TLS ERROR") ||
+		strings.Contains(upper, "TLS KEY NEGOTIATION FAILED")
 }
 
 type openVPNScanResult struct {

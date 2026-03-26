@@ -3,10 +3,11 @@
 ## 该文件依赖 Linux 宿主机/内核提供的网络能力，包含 privileged、NET_ADMIN、Linux 路由策略等行为。
 services:
   vpngate-web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: vpngate-local:dev
+    #build:
+    #  context: .
+    #  dockerfile: Dockerfile
+    #image: vpngate-local:dev
+    image: ghcr.io/nagelea/vts1:latest
     container_name: vpngate-web
     init: true
     restart: unless-stopped
@@ -17,6 +18,12 @@ services:
       - "8082:8080"
     depends_on:
       - vpngate-runner
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null \"http://127.0.0.1:8080/health\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     command: ["/usr/local/bin/vpngate-web"]
 
   vpngate-runner:
@@ -24,7 +31,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: vpngate-local:dev
+    #image: vpngate-local:dev
+    image: ghcr.io/nagelea/vts1:latest
     container_name: vpngate-runner
     init: true
     restart: unless-stopped
@@ -49,6 +57,12 @@ services:
       NODE_QUARANTINE: "${NODE_QUARANTINE:-5m}"
       BYPASS_ROUTE_TABLE: "${BYPASS_ROUTE_TABLE:-100}"
       BYPASS_FWMARK: "${BYPASS_FWMARK:-1}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null \"http://127.0.0.1:18081/health\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     command: ["/usr/local/bin/vpngate-runner"]
     ports:
       - "10080:1080"
