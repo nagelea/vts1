@@ -38,6 +38,8 @@ type App struct {
 	lastRefreshDuration time.Duration
 	lastError           string
 	testResults         map[string]serverTestState
+	batchTest           batchTestState
+	batchCancel         context.CancelFunc
 	testSlot            chan struct{}
 }
 
@@ -68,6 +70,7 @@ type PageData struct {
 	AveragePing         string
 	HighestSpeed        string
 	Rows                []ServerRow
+	BatchTest           BatchTestView
 	CurrentPage         int
 	TotalPages          int
 	PageStart           int
@@ -135,12 +138,39 @@ type serverTestState struct {
 	UpdatedAt time.Time
 }
 
+type batchTestState struct {
+	Running         bool
+	Total           int
+	Completed       int
+	Succeeded       int
+	Failed          int
+	CurrentHostName string
+	CurrentIP       string
+	StartedAt       time.Time
+	FinishedAt      time.Time
+	LastMessage     string
+}
+
+type BatchTestView struct {
+	Running   bool
+	CanStart  bool
+	CanStop   bool
+	HasRun    bool
+	Summary   string
+	Current   string
+	Total     int
+	Completed int
+	Succeeded int
+	Failed    int
+}
+
 type actionResponse struct {
 	OK     bool               `json:"ok"`
 	Notice string             `json:"notice,omitempty"`
 	Error  string             `json:"error,omitempty"`
 	Reload bool               `json:"reload,omitempty"`
 	Test   *serverTestPayload `json:"test,omitempty"`
+	Batch  *batchTestPayload  `json:"batch,omitempty"`
 }
 
 type serverTestPayload struct {
@@ -150,6 +180,20 @@ type serverTestPayload struct {
 	Status    string `json:"status"`
 	ClassName string `json:"className"`
 	Detail    string `json:"detail"`
+}
+
+type batchTestPayload struct {
+	Running   bool                 `json:"running"`
+	CanStart  bool                 `json:"canStart"`
+	CanStop   bool                 `json:"canStop"`
+	HasRun    bool                 `json:"hasRun"`
+	Summary   string               `json:"summary"`
+	Current   string               `json:"current,omitempty"`
+	Total     int                  `json:"total"`
+	Completed int                  `json:"completed"`
+	Succeeded int                  `json:"succeeded"`
+	Failed    int                  `json:"failed"`
+	Tests     []*serverTestPayload `json:"tests,omitempty"`
 }
 
 type responseRecorder struct {
@@ -191,6 +235,9 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("/", a.handleIndex)
 	mux.HandleFunc("/refresh", a.handleRefresh)
 	mux.HandleFunc("/servers/test", a.handleServerTest)
+	mux.HandleFunc("/servers/test/batch", a.handleBatchServerTest)
+	mux.HandleFunc("/servers/test/batch/stop", a.handleBatchServerTestStop)
+	mux.HandleFunc("/servers/test/batch/status", a.handleBatchServerTestStatus)
 	mux.HandleFunc("/vpn/connect/recommended", a.handleVPNConnectRecommended)
 	mux.HandleFunc("/vpn/connect", a.handleVPNConnect)
 	mux.HandleFunc("/vpn/disconnect", a.handleVPNDisconnect)
@@ -354,6 +401,11 @@ func (a *App) handleServerTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if a.isBatchTestRunning() {
+		respondTestAction(http.StatusConflict, false, "", "批量测试进行中，请等待当前批量任务结束后再发起单节点测试", &server, nil)
+		return
+	}
+
 	select {
 	case a.testSlot <- struct{}{}:
 		defer func() {
@@ -364,58 +416,98 @@ func (a *App) handleServerTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := serverTestKey(server.HostName, server.IP)
-	a.setServerTestState(key, serverTestState{
-		Status:    "测试中",
-		ClassName: "test-running",
-		Detail:    "OpenVPN 正在尝试建立连接，请耐心等待测试完成",
-		UpdatedAt: time.Now(),
-	})
-
-	a.logger.Printf("开始测试节点：%s（%s）", server.HostName, server.IP)
-
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
-	var result vpngate.OpenVPNTestResult
-	var err error
-	if a.runner != nil && a.runner.Enabled() {
-		result, err = a.runner.TestServer(ctx, server)
-	} else {
-		result, err = vpngate.TestServerWithOpenVPN(ctx, server)
-	}
+	state, notice, err := a.runServerTest(ctx, server)
 	if err != nil {
-		failureDetail := err.Error()
-		failureState := serverTestState{
-			Status:    "测试失败",
-			ClassName: "test-failure",
-			Detail:    failureDetail,
-			UpdatedAt: time.Now(),
-		}
-		a.setServerTestState(key, failureState)
-
-		a.logger.Printf("测试节点失败：%s（%s）：%v", server.HostName, server.IP, err)
-		respondTestAction(http.StatusOK, false, "", fmt.Sprintf("节点 %s 测试失败：%s", server.HostName, failureDetail), &server, &failureState)
+		respondTestAction(http.StatusOK, false, "", fmt.Sprintf("节点 %s 测试失败：%s", server.HostName, err.Error()), &server, &state)
 		return
 	}
 
-	successDetail := result.Detail
-	if strings.TrimSpace(successDetail) == "" {
-		successDetail = fmt.Sprintf("在 %s 内完成握手并自动断开", formatDurationCN(result.Duration))
-	} else {
-		successDetail = fmt.Sprintf("%s，用时 %s", successDetail, formatDurationCN(result.Duration))
+	respondTestAction(http.StatusOK, true, notice, "", &server, &state)
+}
+
+func (a *App) handleBatchServerTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		a.writeActionError(w, r, http.StatusMethodNotAllowed, "仅支持 POST 请求")
+		return
 	}
 
-	successState := serverTestState{
-		Status:    "测试通过",
-		ClassName: "test-success",
-		Detail:    successDetail,
-		UpdatedAt: time.Now(),
+	if err := validateSameOriginRequest(r); err != nil {
+		a.writeActionError(w, r, http.StatusForbidden, err.Error())
+		return
 	}
-	a.setServerTestState(key, successState)
 
-	a.logger.Printf("测试节点成功：%s（%s），耗时 %s", server.HostName, server.IP, formatDurationCN(result.Duration))
-	respondTestAction(http.StatusOK, true, fmt.Sprintf("节点 %s 测试通过，用时 %s", server.HostName, formatDurationCN(result.Duration)), "", &server, &successState)
+	if err := parseSubmittedForm(r); err != nil {
+		a.writeActionError(w, r, http.StatusBadRequest, "读取表单失败")
+		return
+	}
+
+	query := strings.TrimSpace(r.FormValue("q"))
+	selectedCountry := strings.TrimSpace(r.FormValue("country"))
+	servers := a.listBatchServers(query, selectedCountry)
+	if len(servers) == 0 {
+		a.writeJSON(w, http.StatusNotFound, actionResponse{OK: false, Error: "当前筛选条件下没有可用于批量测试的节点"})
+		return
+	}
+
+	if a.isBatchTestRunning() {
+		a.writeJSON(w, http.StatusConflict, actionResponse{OK: false, Error: "已有批量测试正在执行，请等待当前任务结束"})
+		return
+	}
+
+	select {
+	case a.testSlot <- struct{}{}:
+		<-a.testSlot
+	default:
+		a.writeJSON(w, http.StatusConflict, actionResponse{OK: false, Error: "已有节点正在进行 OpenVPN 测试，请稍后再发起批量测试"})
+		return
+	}
+
+	batchCtx, cancel := context.WithCancel(context.Background())
+	a.startBatchTest(cancel, servers)
+	go a.runBatchTests(batchCtx, servers)
+
+	a.writeJSON(w, http.StatusAccepted, actionResponse{
+		OK:     true,
+		Notice: fmt.Sprintf("已开始批量测试当前筛选结果，共 %d 个节点", len(servers)),
+		Batch:  a.buildBatchTestPayload(),
+	})
+}
+
+func (a *App) handleBatchServerTestStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		a.writeActionError(w, r, http.StatusMethodNotAllowed, "仅支持 POST 请求")
+		return
+	}
+
+	if err := validateSameOriginRequest(r); err != nil {
+		a.writeActionError(w, r, http.StatusForbidden, err.Error())
+		return
+	}
+
+	cancel := a.stopBatchTest()
+	if cancel == nil {
+		a.writeJSON(w, http.StatusConflict, actionResponse{OK: false, Error: "当前没有正在执行的批量测试"})
+		return
+	}
+
+	cancel()
+	a.writeJSON(w, http.StatusOK, actionResponse{
+		OK:     true,
+		Notice: "已发送停止批量测试请求",
+		Batch:  a.buildBatchTestPayload(),
+	})
+}
+
+func (a *App) handleBatchServerTestStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "仅支持 GET 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	a.writeJSON(w, http.StatusOK, a.buildBatchTestPayload())
 }
 
 func (a *App) handleVPNConnect(w http.ResponseWriter, r *http.Request) {
@@ -651,6 +743,221 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"状态":"正常"}`))
 }
 
+func (a *App) runServerTest(ctx context.Context, server vpngate.Server) (serverTestState, string, error) {
+	key := serverTestKey(server.HostName, server.IP)
+	a.setServerTestState(key, serverTestState{
+		Status:    "测试中",
+		ClassName: "test-running",
+		Detail:    "OpenVPN 正在尝试建立连接，请耐心等待测试完成",
+		UpdatedAt: time.Now(),
+	})
+
+	a.logger.Printf("开始测试节点：%s（%s）", server.HostName, server.IP)
+
+	var result vpngate.OpenVPNTestResult
+	var err error
+	if a.runner != nil && a.runner.Enabled() {
+		result, err = a.runner.TestServer(ctx, server)
+	} else {
+		result, err = vpngate.TestServerWithOpenVPN(ctx, server)
+	}
+	if err != nil {
+		state := serverTestState{
+			Status:    "测试失败",
+			ClassName: "test-failure",
+			Detail:    err.Error(),
+			UpdatedAt: time.Now(),
+		}
+		a.setServerTestState(key, state)
+		a.logger.Printf("测试节点失败：%s（%s）：%v", server.HostName, server.IP, err)
+		return state, "", err
+	}
+
+	successDetail := result.Detail
+	if strings.TrimSpace(successDetail) == "" {
+		successDetail = fmt.Sprintf("在 %s 内完成握手并自动断开", formatDurationCN(result.Duration))
+	} else {
+		successDetail = fmt.Sprintf("%s，用时 %s", successDetail, formatDurationCN(result.Duration))
+	}
+
+	state := serverTestState{
+		Status:    "测试通过",
+		ClassName: "test-success",
+		Detail:    successDetail,
+		UpdatedAt: time.Now(),
+	}
+	a.setServerTestState(key, state)
+
+	notice := fmt.Sprintf("节点 %s 测试通过，用时 %s", server.HostName, formatDurationCN(result.Duration))
+	a.logger.Printf("测试节点成功：%s（%s），耗时 %s", server.HostName, server.IP, formatDurationCN(result.Duration))
+	return state, notice, nil
+}
+
+func (a *App) listBatchServers(query, selectedCountry string) []vpngate.Server {
+	normalizedQuery := strings.ToLower(strings.TrimSpace(query))
+	normalizedCountry := strings.TrimSpace(selectedCountry)
+
+	a.mu.RLock()
+	servers := append([]vpngate.Server(nil), a.servers...)
+	a.mu.RUnlock()
+
+	filtered := make([]vpngate.Server, 0, len(servers))
+	for _, server := range servers {
+		if matchesFilters(server, normalizedQuery, normalizedCountry) {
+			filtered = append(filtered, server)
+		}
+	}
+
+	return filtered
+}
+
+func (a *App) startBatchTest(cancel context.CancelFunc, servers []vpngate.Server) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.batchCancel = cancel
+	a.batchTest = batchTestState{
+		Running:   true,
+		Total:     len(servers),
+		StartedAt: time.Now(),
+	}
+
+	for _, server := range servers {
+		a.testResults[serverTestKey(server.HostName, server.IP)] = serverTestState{
+			Status:    "排队中",
+			ClassName: "test-idle",
+			Detail:    "等待批量测试执行",
+			UpdatedAt: time.Now(),
+		}
+	}
+}
+
+func (a *App) stopBatchTest() context.CancelFunc {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cancel := a.batchCancel
+	a.batchCancel = nil
+	return cancel
+}
+
+func (a *App) isBatchTestRunning() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	return a.batchTest.Running
+}
+
+func (a *App) runBatchTests(ctx context.Context, servers []vpngate.Server) {
+	for _, server := range servers {
+		select {
+		case <-ctx.Done():
+			a.finishBatchTest("批量测试已停止")
+			return
+		default:
+		}
+
+		a.updateBatchCurrent(server)
+
+		select {
+		case a.testSlot <- struct{}{}:
+		case <-ctx.Done():
+			a.finishBatchTest("批量测试已停止")
+			return
+		}
+
+		testCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		state, _, err := a.runServerTest(testCtx, server)
+		cancel()
+		<-a.testSlot
+
+		a.updateBatchProgress(state, err)
+		if ctx.Err() != nil {
+			a.finishBatchTest("批量测试已停止")
+			return
+		}
+	}
+
+	a.finishBatchTest("批量测试已完成")
+}
+
+func (a *App) updateBatchCurrent(server vpngate.Server) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.batchTest.Running {
+		return
+	}
+
+	a.batchTest.CurrentHostName = server.HostName
+	a.batchTest.CurrentIP = server.IP
+}
+
+func (a *App) updateBatchProgress(state serverTestState, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.batchTest.Running {
+		return
+	}
+
+	a.batchTest.Completed++
+	if err != nil {
+		a.batchTest.Failed++
+		a.batchTest.LastMessage = safeText(state.Detail, "批量测试中有节点失败")
+	} else {
+		a.batchTest.Succeeded++
+		a.batchTest.LastMessage = "批量测试正在进行"
+	}
+}
+
+func (a *App) finishBatchTest(message string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.batchTest.Running = false
+	a.batchTest.CurrentHostName = ""
+	a.batchTest.CurrentIP = ""
+	a.batchTest.FinishedAt = time.Now()
+	a.batchTest.LastMessage = message
+	a.batchCancel = nil
+}
+
+func (a *App) buildBatchTestPayload() *batchTestPayload {
+	a.mu.RLock()
+	state := a.batchTest
+	testResults := make(map[string]serverTestState, len(a.testResults))
+	maps.Copy(testResults, a.testResults)
+	a.mu.RUnlock()
+
+	tests := make([]*serverTestPayload, 0, len(testResults))
+	for key, result := range testResults {
+		hostName, ip, _ := strings.Cut(key, "|")
+		tests = append(tests, buildServerTestPayload(vpngate.Server{HostName: hostName, IP: ip}, result))
+	}
+	sort.Slice(tests, func(i, j int) bool {
+		if tests[i].HostName == tests[j].HostName {
+			return tests[i].IP < tests[j].IP
+		}
+		return tests[i].HostName < tests[j].HostName
+	})
+
+	view := buildBatchTestView(state)
+	return &batchTestPayload{
+		Running:   view.Running,
+		CanStart:  view.CanStart,
+		CanStop:   view.CanStop,
+		HasRun:    view.HasRun,
+		Summary:   view.Summary,
+		Current:   view.Current,
+		Total:     view.Total,
+		Completed: view.Completed,
+		Succeeded: view.Succeeded,
+		Failed:    view.Failed,
+		Tests:     tests,
+	}
+}
+
 func (a *App) buildPageData(notice, flashError, query, selectedCountry string, requestedPage int) PageData {
 	runnerStatus, runnerErr := a.fetchRunnerStatus()
 	vpnStatusText, vpnStatusClass, vpnStatusDetail, vpnCurrentNode, vpnCurrentIP, vpnConnectedSince, vpnCanDisconnect := formatVPNStatus(runnerStatus, runnerErr)
@@ -662,6 +969,7 @@ func (a *App) buildPageData(notice, flashError, query, selectedCountry string, r
 	lastError := a.lastError
 	testResults := make(map[string]serverTestState, len(a.testResults))
 	maps.Copy(testResults, a.testResults)
+	batchTest := a.batchTest
 	a.mu.RUnlock()
 
 	rows := make([]ServerRow, 0, len(servers))
@@ -784,6 +1092,7 @@ func (a *App) buildPageData(notice, flashError, query, selectedCountry string, r
 		AveragePing:         averagePing,
 		HighestSpeed:        formatBitRate(highestSpeed),
 		Rows:                pagedRows,
+		BatchTest:           buildBatchTestView(batchTest),
 		CurrentPage:         currentPage,
 		TotalPages:          totalPages,
 		PageStart:           pageStart,
@@ -1109,6 +1418,37 @@ func buildServerTestPayload(server vpngate.Server, state serverTestState) *serve
 		ClassName: formatted.ClassName,
 		Detail:    formatted.Detail,
 	}
+}
+
+func buildBatchTestView(state batchTestState) BatchTestView {
+	view := BatchTestView{
+		Running:   state.Running,
+		CanStart:  !state.Running,
+		CanStop:   state.Running,
+		HasRun:    state.Total > 0 || !state.FinishedAt.IsZero(),
+		Total:     state.Total,
+		Completed: state.Completed,
+		Succeeded: state.Succeeded,
+		Failed:    state.Failed,
+	}
+
+	if strings.TrimSpace(state.CurrentHostName) != "" {
+		view.Current = fmt.Sprintf("%s（%s）", state.CurrentHostName, safeText(state.CurrentIP, "未知 IP"))
+	}
+
+	switch {
+	case state.Running:
+		view.Summary = fmt.Sprintf("批量测试进行中：已完成 %d / %d，成功 %d，失败 %d", state.Completed, state.Total, state.Succeeded, state.Failed)
+		if view.Current != "" {
+			view.Summary += " ｜ 当前节点：" + view.Current
+		}
+	case view.HasRun:
+		view.Summary = fmt.Sprintf("%s：共 %d 个节点，成功 %d，失败 %d", safeText(state.LastMessage, "批量测试已结束"), state.Total, state.Succeeded, state.Failed)
+	default:
+		view.Summary = "可对当前筛选结果发起批量测试，测试结果会在页面中实时更新"
+	}
+
+	return view
 }
 
 func formatProxyAddressesCN(status runner.Status) string {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"vpngate/internal/runner"
 	"vpngate/internal/runnerclient"
@@ -132,6 +133,52 @@ func TestBuildIndexURLIncludesPageOnlyAfterFirstPage(t *testing.T) {
 	}
 	if got := parsed.Query().Get("page"); got != "" {
 		t.Fatalf("query param page = %q, want empty string", got)
+	}
+}
+
+func TestListBatchServersRespectsFilters(t *testing.T) {
+	app, err := NewApp(log.New(io.Discard, "", 0), nil, nil)
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+
+	app.mu.Lock()
+	app.servers = []vpngate.Server{
+		{HostName: "jp-one", IP: "1.1.1.1", CountryLong: "Japan", CountryShort: "JP"},
+		{HostName: "jp-two", IP: "1.1.1.2", CountryLong: "Japan", CountryShort: "JP"},
+		{HostName: "kr-one", IP: "2.2.2.2", CountryLong: "Korea Republic of", CountryShort: "KR"},
+	}
+	app.mu.Unlock()
+
+	servers := app.listBatchServers("jp", "JP")
+	if len(servers) != 2 {
+		t.Fatalf("listBatchServers() len = %d, want %d", len(servers), 2)
+	}
+	if servers[0].HostName != "jp-one" || servers[1].HostName != "jp-two" {
+		t.Fatalf("listBatchServers() hosts = [%s %s], want [jp-one jp-two]", servers[0].HostName, servers[1].HostName)
+	}
+}
+
+func TestBuildBatchTestViewRunningSummary(t *testing.T) {
+	view := buildBatchTestView(batchTestState{
+		Running:         true,
+		Total:           10,
+		Completed:       4,
+		Succeeded:       3,
+		Failed:          1,
+		CurrentHostName: "vpn-node",
+		CurrentIP:       "1.2.3.4",
+		StartedAt:       time.Now(),
+	})
+
+	if !view.Running {
+		t.Fatal("buildBatchTestView().Running = false, want true")
+	}
+	if !strings.Contains(view.Summary, "已完成 4 / 10") {
+		t.Fatalf("buildBatchTestView().Summary = %q, want progress text", view.Summary)
+	}
+	if !strings.Contains(view.Summary, "当前节点：vpn-node（1.2.3.4）") {
+		t.Fatalf("buildBatchTestView().Summary = %q, want current node text", view.Summary)
 	}
 }
 

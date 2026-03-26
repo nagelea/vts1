@@ -440,6 +440,21 @@
       padding: 0 22px 16px;
     }
 
+    .batch-status {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 0 22px 18px;
+    }
+
+    .batch-summary {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
     .pagination {
       display: flex;
       justify-content: space-between;
@@ -803,12 +818,32 @@
           <div class="toolbar-actions">
             <span class="pill">当前结果：{{.TotalCount}} / {{.SourceCount}} 条</span>
             <span class="pill">页码：第 {{.CurrentPage}} / {{.TotalPages}} 页</span>
+            <form class="action-form js-batch-start-form" method="post" action="/servers/test/batch" {{if or (not .BatchTest.CanStart) (not .HasData)}}hidden{{end}}>
+              <input type="hidden" name="q" value="{{.Query}}">
+              <input type="hidden" name="country" value="{{.SelectedCountry}}">
+              <input type="hidden" name="page" value="{{.CurrentPage}}">
+              <button class="btn btn-primary-soft" type="submit" data-default-label="批量测试当前筛选结果" data-pending-label="批量测试启动中…">批量测试当前筛选结果</button>
+            </form>
+            <form class="action-form js-batch-stop-form" method="post" action="/servers/test/batch/stop" {{if not .BatchTest.CanStop}}hidden{{end}}>
+              <input type="hidden" name="q" value="{{.Query}}">
+              <input type="hidden" name="country" value="{{.SelectedCountry}}">
+              <input type="hidden" name="page" value="{{.CurrentPage}}">
+              <button class="btn btn-secondary" type="submit" data-default-label="停止批量测试" data-pending-label="停止中…">停止批量测试</button>
+            </form>
             <span class="pill">协议类型：OpenVPN</span>
           </div>
         </div>
         <div class="table-hint">
           <span class="pill">测试按钮已移动到“节点名称”列，首屏即可直接发起</span>
           <span class="pill">如需查看更多字段，可横向滚动表格</span>
+        </div>
+        <div class="batch-status" data-batch-panel>
+          <div class="batch-summary" data-batch-summary>{{.BatchTest.Summary}}</div>
+          <div class="toolbar-actions">
+            <span class="pill" data-batch-progress>已完成 {{.BatchTest.Completed}} / {{.BatchTest.Total}}</span>
+            <span class="pill" data-batch-success>成功 {{.BatchTest.Succeeded}}</span>
+            <span class="pill" data-batch-failure>失败 {{.BatchTest.Failed}}</span>
+          </div>
         </div>
 
         {{if .HasData}}
@@ -924,6 +959,19 @@
     (() => {
       const toastRegion = document.getElementById('toast-region');
       const storageKey = 'vpngate:toast';
+      const testContainers = new Map(
+        Array.from(document.querySelectorAll('.server-actions[data-server-key]')).map((container) => [
+          container.dataset.serverKey,
+          container,
+        ]),
+      );
+      const batchStartForm = document.querySelector('.js-batch-start-form');
+      const batchStopForm = document.querySelector('.js-batch-stop-form');
+      const batchSummaryEl = document.querySelector('[data-batch-summary]');
+      const batchProgressEl = document.querySelector('[data-batch-progress]');
+      const batchSuccessEl = document.querySelector('[data-batch-success]');
+      const batchFailureEl = document.querySelector('[data-batch-failure]');
+      let batchPollTimer = 0;
 
       function showToast(message, kind = 'info') {
         if (!toastRegion || !message) return;
@@ -999,6 +1047,13 @@
         }
       }
 
+      function updateTestUIByKey(payload) {
+        if (!payload || !payload.key) return;
+        const container = testContainers.get(payload.key);
+        if (!container) return;
+        updateTestUI(container, payload);
+      }
+
       async function parseJSONSafe(response) {
         const text = await response.text();
         if (!text) return {};
@@ -1006,6 +1061,61 @@
           return JSON.parse(text);
         } catch (_) {
           return { ok: false, error: text.trim() || '服务器返回了无法解析的响应' };
+        }
+      }
+
+      function stopBatchPolling() {
+        if (!batchPollTimer) return;
+        window.clearInterval(batchPollTimer);
+        batchPollTimer = 0;
+      }
+
+      function startBatchPolling() {
+        if (batchPollTimer) return;
+        batchPollTimer = window.setInterval(async () => {
+          try {
+            const response = await fetch('/servers/test/batch/status', {
+              headers: {
+                'Accept': 'application/json',
+                'X-Requested-With': 'fetch',
+              },
+            });
+            const data = await parseJSONSafe(response);
+            if (!response.ok) return;
+            renderBatchStatus(data);
+          } catch (_) {}
+        }, 2000);
+      }
+
+      function renderBatchStatus(payload) {
+        if (!payload) return;
+
+        if (batchSummaryEl) {
+          batchSummaryEl.textContent = payload.summary || '可对当前筛选结果发起批量测试，测试结果会在页面中实时更新';
+        }
+        if (batchProgressEl) {
+          batchProgressEl.textContent = `已完成 ${payload.completed || 0} / ${payload.total || 0}`;
+        }
+        if (batchSuccessEl) {
+          batchSuccessEl.textContent = `成功 ${payload.succeeded || 0}`;
+        }
+        if (batchFailureEl) {
+          batchFailureEl.textContent = `失败 ${payload.failed || 0}`;
+        }
+        if (batchStartForm) {
+          batchStartForm.hidden = !payload.canStart;
+        }
+        if (batchStopForm) {
+          batchStopForm.hidden = !payload.canStop;
+        }
+        if (Array.isArray(payload.tests)) {
+          payload.tests.forEach(updateTestUIByKey);
+        }
+
+        if (payload.running) {
+          startBatchPolling();
+        } else {
+          stopBatchPolling();
         }
       }
 
@@ -1142,8 +1252,73 @@
         });
       });
 
+      [batchStartForm, batchStopForm].filter(Boolean).forEach((form) => {
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+
+          const button = form.querySelector('button[type="submit"]');
+          if (!button) return;
+
+          const defaultLabel = button.dataset.defaultLabel || button.textContent.trim();
+          const pendingLabel = button.dataset.pendingLabel || '处理中…';
+          const payload = new URLSearchParams(new FormData(form));
+
+          button.disabled = true;
+          button.textContent = pendingLabel;
+
+          try {
+            const response = await fetch(form.action, {
+              method: 'POST',
+              body: payload,
+              headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'X-Requested-With': 'fetch',
+              },
+            });
+            const data = await parseJSONSafe(response);
+            if (data.batch) {
+              renderBatchStatus(data.batch);
+            }
+            if (!response.ok || !data.ok) {
+              throw new Error(data.error || '批量测试操作失败，请稍后重试');
+            }
+
+            if (data.batch?.running) {
+              startBatchPolling();
+            } else {
+              window.setTimeout(async () => {
+                try {
+                  const statusResponse = await fetch('/servers/test/batch/status', {
+                    headers: {
+                      'Accept': 'application/json',
+                      'X-Requested-With': 'fetch',
+                    },
+                  });
+                  const statusData = await parseJSONSafe(statusResponse);
+                  if (statusResponse.ok) {
+                    renderBatchStatus(statusData);
+                  }
+                } catch (_) {}
+              }, 300);
+            }
+
+            showToast(data.notice || '批量测试操作已执行', 'success');
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '批量测试操作失败，请稍后重试';
+            showToast(message, 'error');
+          } finally {
+            button.disabled = false;
+            button.textContent = defaultLabel;
+          }
+        });
+      });
+
       restoreToast();
       cleanFlashParams();
+      if ({{if .BatchTest.Running}}true{{else}}false{{end}}) {
+        startBatchPolling();
+      }
     })();
   </script>
 </body>
