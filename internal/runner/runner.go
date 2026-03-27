@@ -22,6 +22,7 @@ import (
 const runnerLogTailLimit = 80
 
 const openVPNConnectTimeoutGrace = 2 * time.Second
+const runnerServerTestTimeout = 12 * time.Second
 
 type Runner struct {
 	logger *log.Logger
@@ -373,7 +374,7 @@ func (r *Runner) TestServer(ctx context.Context, server vpngate.Server) (vpngate
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, runnerServerTestTimeout)
 	defer cancel()
 
 	result, err := vpngate.TestServerWithOpenVPN(ctx, server)

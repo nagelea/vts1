@@ -25,6 +25,7 @@ import (
 var templateFS embed.FS
 
 const serversPerPage = 25
+const serverTestTimeout = 12 * time.Second
 
 type App struct {
 	client *http.Client
@@ -416,7 +417,7 @@ func (a *App) handleServerTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), serverTestTimeout)
 	defer cancel()
 
 	state, notice, err := a.runServerTest(ctx, server)
@@ -748,7 +749,7 @@ func (a *App) runServerTest(ctx context.Context, server vpngate.Server) (serverT
 	a.setServerTestState(key, serverTestState{
 		Status:    "测试中",
 		ClassName: "test-running",
-		Detail:    "OpenVPN 正在尝试建立连接，请耐心等待测试完成",
+		Detail:    "正在执行 TCP 预检，通过后继续尝试 OpenVPN 握手",
 		UpdatedAt: time.Now(),
 	})
 
@@ -866,7 +867,7 @@ func (a *App) runBatchTests(ctx context.Context, servers []vpngate.Server) {
 			return
 		}
 
-		testCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		testCtx, cancel := context.WithTimeout(ctx, serverTestTimeout)
 		state, _, err := a.runServerTest(testCtx, server)
 		cancel()
 		<-a.testSlot

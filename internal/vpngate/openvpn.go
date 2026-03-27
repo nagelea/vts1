@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"slices"
@@ -16,15 +17,21 @@ import (
 )
 
 const (
-	OpenVPNSuccessMarker = "Initialization Sequence Completed"
-	openVPNExecutable    = "openvpn"
-	openVPNLogTailLimit  = 80
+	OpenVPNSuccessMarker        = "Initialization Sequence Completed"
+	openVPNExecutable           = "openvpn"
+	openVPNLogTailLimit         = 80
+	defaultOpenVPNTestTimeout   = 12 * time.Second
+	defaultTCPPrecheckTimeout   = 3 * time.Second
+	defaultTCPPrecheckKeepAlive = 15 * time.Second
 )
 
 type OpenVPNLaunch struct {
 	Executable string
 	ConfigText string
 	Cipher     string
+	Protocol   string
+	RemoteHost string
+	RemotePort string
 }
 
 type OpenVPNTestResult struct {
@@ -43,6 +50,9 @@ func PrepareOpenVPNLaunch(server Server) (OpenVPNLaunch, error) {
 		Executable: openVPNExecutable,
 		ConfigText: normalizeOpenVPNConfig(configText),
 		Cipher:     detectLegacyCipher(configText),
+		Protocol:   detectRemoteProtocol(configText),
+		RemoteHost: detectRemoteHost(configText),
+		RemotePort: detectRemotePort(configText),
 	}, nil
 }
 
@@ -65,12 +75,22 @@ func BuildOpenVPNConnectArgs(configPath, cipher string) []string {
 
 func TestServerWithOpenVPN(ctx context.Context, server Server) (OpenVPNTestResult, error) {
 	if ctx == nil {
-		ctx = context.Background()
+		baseCtx := context.Background()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(baseCtx, defaultOpenVPNTestTimeout)
+		defer cancel()
 	}
 
+	start := time.Now()
 	launch, err := PrepareOpenVPNLaunch(server)
 	if err != nil {
 		return OpenVPNTestResult{}, err
+	}
+
+	if shouldRunTCPPrecheck(launch) {
+		if err := runTCPPrecheck(ctx, launch.RemoteHost, launch.RemotePort); err != nil {
+			return OpenVPNTestResult{}, err
+		}
 	}
 
 	tmpFile, err := os.CreateTemp("", "vpngate-openvpn-test-*.ovpn")
@@ -102,7 +122,6 @@ func TestServerWithOpenVPN(ctx context.Context, server Server) (OpenVPNTestResul
 		scanDone <- scanOpenVPNOutput(reader, successCh)
 	}()
 
-	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		_ = writer.Close()
 		scanResult := <-scanDone
@@ -285,6 +304,69 @@ func buildDataCiphers(cipher string) string {
 	return strings.Join(base, ":")
 }
 
+func shouldRunTCPPrecheck(launch OpenVPNLaunch) bool {
+	if strings.TrimSpace(launch.RemoteHost) == "" || strings.TrimSpace(launch.RemotePort) == "" {
+		return false
+	}
+
+	protocol := strings.ToLower(strings.TrimSpace(launch.Protocol))
+	return strings.HasPrefix(protocol, "tcp")
+}
+
+func runTCPPrecheck(ctx context.Context, host, port string) error {
+	timeout := defaultTCPPrecheckTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("TCP 预检失败：测试已超时")
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+
+	target := net.JoinHostPort(strings.TrimSpace(host), strings.TrimSpace(port))
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: defaultTCPPrecheckKeepAlive,
+	}
+	precheckCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	conn, err := dialer.DialContext(precheckCtx, "tcp", target)
+	if err != nil {
+		return fmt.Errorf("TCP 预检失败：%s", summarizeTCPPrecheckError(err))
+	}
+	_ = conn.Close()
+	return nil
+}
+
+func summarizeTCPPrecheckError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "连接目标节点超时"
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "连接目标节点超时"
+	}
+
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(message, "host is unreachable"), strings.Contains(message, "no route to host"):
+		return "目标节点不可达"
+	case strings.Contains(message, "network is unreachable"):
+		return "网络不可达，无法连接目标节点"
+	case strings.Contains(message, "connection refused"):
+		return "目标节点拒绝连接"
+	default:
+		return err.Error()
+	}
+}
+
 type openVPNScanResult struct {
 	lines []string
 	err   error
@@ -416,12 +498,7 @@ func normalizeOpenVPNConfig(configText string) string {
 func detectLegacyCipher(configText string) string {
 	scanner := bufio.NewScanner(strings.NewReader(configText))
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-
-		fields := strings.Fields(line)
+		fields := parseOpenVPNConfigFields(scanner.Text())
 		if len(fields) < 2 {
 			continue
 		}
@@ -431,4 +508,53 @@ func detectLegacyCipher(configText string) string {
 	}
 
 	return ""
+}
+
+func detectRemoteProtocol(configText string) string {
+	scanner := bufio.NewScanner(strings.NewReader(configText))
+	for scanner.Scan() {
+		fields := parseOpenVPNConfigFields(scanner.Text())
+		if len(fields) < 2 {
+			continue
+		}
+		if strings.EqualFold(fields[0], "proto") {
+			return fields[1]
+		}
+	}
+
+	return ""
+}
+
+func detectRemoteHost(configText string) string {
+	host, _ := detectRemoteEndpoint(configText)
+	return host
+}
+
+func detectRemotePort(configText string) string {
+	_, port := detectRemoteEndpoint(configText)
+	return port
+}
+
+func detectRemoteEndpoint(configText string) (string, string) {
+	scanner := bufio.NewScanner(strings.NewReader(configText))
+	for scanner.Scan() {
+		fields := parseOpenVPNConfigFields(scanner.Text())
+		if len(fields) < 3 {
+			continue
+		}
+		if strings.EqualFold(fields[0], "remote") {
+			return fields[1], fields[2]
+		}
+	}
+
+	return "", ""
+}
+
+func parseOpenVPNConfigFields(line string) []string {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+		return nil
+	}
+
+	return strings.Fields(line)
 }
