@@ -321,7 +321,7 @@ func parseCSVRecord(line string) ([]string, error) {
 
 func parseInt64Field(raw string, lineNo int, fieldName string) (int64, error) {
 	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	if raw == "" || raw == "-" {
 		return 0, nil
 	}
 
